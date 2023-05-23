@@ -1,0 +1,16 @@
+---
+- name: Find fstab line for the disk
+  set_fact:
+    fstab_line: "{{ fstab_info.stdout_lines | select('match', '^/dev/' + item.split()[0] + '.*') | list | f
+irst }}"
+  when: "fstab_info.stdout_lines | select('match', '^/dev/' + item.split()[0] + '.*') | list | length > 0"
+
+- name: Update the fstab entry
+  lineinfile:
+    path: /etc/fstab
+    regexp: "^/dev/{{  item.split()[0] }}.*"
+    line: "LABEL={{  item.split()[1] }}\t{{ fstab_line.split()[1:]  | join(' ')  }}"
+    state: present
+    backup: true
+  when: "item.split()[0] in fstab_info.stdout and item.split()[1] in ['CONTAINERS', 'LOGS', 'KUBELET'] and 
+fstab_line is defined"
