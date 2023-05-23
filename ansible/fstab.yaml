@@ -1,26 +1,9 @@
-﻿---
+---
 - hosts: all
   become: yes
   tasks:
-    - name: Gather disk information
-      command: lsblk -o NAME,MOUNTPOINT,LABEL
-      register: disk_info
-      changed_when: false
-
-
-    - name: Label disks if necessary
-      command: e2label {{ item.split()[0] }} {{ label_dict[item.split()[1]] }}
-      with_items: "{{ disk_info.stdout_lines }}"
-      when: "'LABEL' not in item and item.split()[1] in ['/var/lib/rancher', '/var/lib/log', '/var/lib/kubectl']"
-      vars:
-        label_dict:
-          '/var/lib/rancher': 'CONTAINERS'
-          '/var/lib/log': 'LOG'
-          '/var/lib/kubectl': 'KUBELET'
-
-
     - name: Gather disk information again
-      command: lsblk -o NAME,LABEL
+      shell: lsblk -nd -o NAME,LABEL |grep -v sda
       register: disk_info
       changed_when: false
 
@@ -34,6 +17,20 @@
       loop_control:
         label: "{{ item.split()[0] }}"
 
+ 
+    - name: e2label command 
+      command: e2label {{ item.split()[0] }} {{ mount_point_dict[item.split()[0]] }}
+      loop: "{{ disk_info.stdout_lines }}"
+      when: "'LABEL' not in item and item.split()[1] in ['/var/lib/rancher', '/var/lib/logs', '/var/lib/kub
+ectl']"
+      register: e2label_result
+      vars: 
+         mount_point_dict:
+                 '/var/lib/rancher': 'CONTAINERS'
+                 '/var/lib/log': 'LOGS'
+                 '/var/lib/kubectl': 'KUBELET'
+      changed_when: false
+
 
     - name: Gather current fstab entries
       command: cat /etc/fstab
@@ -42,17 +39,5 @@
 
 
     - name: Update fstab entries
-      block:
-        - name: Find fstab line for the disk
-          set_fact:
-            fstab_line: "{{ fstab_info.stdout_lines | select('match', '^'+item.split()[0]+'\s.*') | list | first }}"
-          when: "fstab_info.stdout_lines | select('match', '^'+item.split()[0]+'\s.*') | list | length > 0"
-
-
-        - name: Update the fstab entry
-          lineinfile:
-            path: /etc/fstab
-            regexp: '^' + item.split()[0]
-            line: 'LABEL={{ item.split()[1] }}\t{{ fstab_line.split()[1:] | join(' ') }}'
-          when: "item.split()[0] in fstab_info.stdout and item.split()[1] in ['CONTAINERS', 'LOG', 'KUBELET'] and fstab_line is defined"
+      include_tasks: update_fstab.yaml
       loop: "{{ disk_info.stdout_lines }}"
