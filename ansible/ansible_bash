@@ -1,0 +1,17 @@
+#!/bin/bash
+
+if [ "$#" -ne 1 ]; then
+    echo "This script requires 1 parameter: Name of the cluster"
+    exit 1
+fi
+
+cluster=$1
+jump_node=ccp04e	
+
+echo get the list of nodes in the cluster
+
+ssh $jump_node "kubectx $cluster > /dev/null && kubectl get nodes -o name|cut -f2 -d'/'" > $cluster.ansible_hosts.tx
+t
+
+ansible-playbook \
+--inventory  $cluster.ansible_hosts.txt --ask-pass --ask-become-pass fstab.yaml
