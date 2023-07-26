@@ -1,0 +1,79 @@
+#!/bin/bash
+
+if [[ ! -f $HOME/.local/bin/aws ]]
+then
+  pip3 install awscli --upgrade --user
+fi
+
+if ! command -v date &> /dev/null; then
+  echo "Error date command not found"
+  exit 1
+fi
+
+OPSGENIE_PATH=/appl/scripts/
+
+AWS_PATH=$HOME/.local/bin/
+
+PATH=$PATH:$AWS_PATH
+
+export AWS_ACCESS_KEY_ID=$(kubectl get secret storage-credentials -n backup -o jsonpath={.data.clo
+ud} | base64 --decode |grep id | cut -f2 -d= |cut -c2-)
+export AWS_SECRET_ACCESS_KEY=$(kubectl get secret storage-credentials -n backup -o jsonpath={.data
+.cloud} | base64 --decode |grep secret | cut -f2 -d= |cut -c2-) 
+
+s3_endpoint=$(kubectl get StorageLocation -n backupnamespace -o json -o jsonpath={.items[0].spec.config.s3Url})
+
+# Source directory and S3 bucket information
+source_directory="/nfs/backup/files"
+s3_bucket_path="/s3path/"
+
+# Get environment variable
+environment=$(kubectl get nodes |grep master|head -1|cut -f2 -d.)
+
+# Generate the S3 bucket name based on the environment variable
+s3_bucket_name="s3-$environment"
+
+# AWS S3 sync to upload new files
+aws s3 sync "$source_directory" "s3://$s3_bucket_name/$s3_bucket_path" --endpoint-url $s3_endpoint
+
+# AWS S3 ls to get the list of S3 objects in the bucket path
+s3_objects=$(aws s3 ls "s3://$s3_bucket_name/$s3_bucket_path" --endpoint-url $s3_endpoint)
+
+# Check if there are valid backups within the last 12 hours
+current_time=$(date -u +%s)
+valid_backup_found=false
+while IFS= read -r object; do
+  last_modified_string=$(echo $object| cut -f1-2 -d" ")
+  last_modified=$(date -d "$last_modified_string" -u +%s)
+  if ((current_time - last_modified < 43220)); then
+    valid_backup_found=true
+    break
+  fi
+done <<< "$s3_objects"
+
+# Call the opsgenie.sh script if no valid backups found
+if [[ ! "$valid_backup_found" ]] && [[ -f $OPSGENIE_PATH/opsgenie.sh ]]; then
+  $OPSGENIE_PATH/opsgenie.sh S3 "Etcd backup to S3 failed today" "Description: The backup failed, no new files 
+in S3"
+fi
+
+# Step 1: List all objects in the bucket and sort them by last modified time.
+objects=$(aws s3api list-objects --bucket "$s3_bucket_name" --prefix "$s3_bucket_path" --output json --query 'C
+ontents | sort_by(@, &LastModified)' --endpoint-url $s3_endpoint)
+
+# Step 2: Extract the object keys (filenames) from the sorted list.
+keys=$(echo "$objects" | jq -r '.[].Key')
+
+# Step 3: Determine the number of most recent files to keep (e.g., 5 most recent).
+num_to_keep=5
+
+# Step 4: Delete all files except the most recent ones.
+for key in $keys; do
+    # Check if the current object is among the most recent ones to keep.
+    if [ $num_to_keep -gt 0 ]; then
+        ((num_to_keep--))
+    else
+        # Delete the object from the bucket.
+        aws s3 rm "s3://$s3_bucket_name/$key" --endpoint-url $s3_endpoint
+    fi
+done
